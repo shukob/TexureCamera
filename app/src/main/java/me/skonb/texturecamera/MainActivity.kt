@@ -37,6 +37,7 @@ class MainActivity : Activity() {
     }
 
     val enabledSpeeds = mutableListOf(Speed._1x)
+    val progressDialogHelper = ProgressDialogHelper()
     var selectedSpeed = Speed._1x
         set(value) {
             if (field != value) {
@@ -202,16 +203,11 @@ class MainActivity : Activity() {
                 MotionEvent.ACTION_MOVE -> {
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    try {
-                        if (stopRecording()) {
-                            val f = File(videoPathsList.last())
-                            if (f.length() == 0L) {
-                                videoPathsList.removeAt(videoPathsList.size - 1)
-                            }
+                    if (stopRecording()) {
+                        val f = File(videoPathsList.last())
+                        if (f.length() == 0L) {
+                            videoPathsList.removeAt(videoPathsList.size - 1)
                         }
-                    } catch (e: RuntimeException) {
-                        e.printStackTrace()
-                        seek_view?.totalLength = recordedVideoLength
                     }
                 }
             }
@@ -251,7 +247,7 @@ class MainActivity : Activity() {
 
             val metrics = DisplayMetrics()
             windowManager.defaultDisplay.getMetrics(metrics)
-            getOptimalSize(parameters.supportedPreviewSizes, metrics.widthPixels, metrics.heightPixels)?.let { previewSize ->
+            getOptimalSize(parameters.supportedPreviewSizes, 1280, 720)?.let { previewSize ->
                 parameters.setPreviewSize(previewSize.width, previewSize.height);
                 previewWidth = previewSize.width
                 previewHeight = previewSize.height
@@ -430,21 +426,32 @@ class MainActivity : Activity() {
         val rotation = windowManager.defaultDisplay.rotation
         val matrix = Matrix()
         val viewRect = RectF(0f, 0f, viewWidth.toFloat(), viewHeight.toFloat())
-        val bufferRect = RectF(0f, 0f, previewWidth.toFloat(), previewHeight.toFloat())
+        var bufferRect = RectF(0f, 0f, previewHeight.toFloat(), previewWidth.toFloat())
         val centerX = viewRect.centerX()
         val centerY = viewRect.centerY()
-        if (Surface.ROTATION_90 == rotation || Surface.ROTATION_270 == rotation) {
-            bufferRect.offset(centerX - bufferRect.centerX(), centerY - bufferRect.centerY())
-            matrix.setRectToRect(viewRect, bufferRect, Matrix.ScaleToFit.FILL)
-            val scale = Math.max(
-                    viewHeight.toFloat() / previewHeight,
-                    viewWidth.toFloat() / previewWidth)
-            matrix.postScale(scale, scale, centerX, centerY)
-            matrix.postRotate((90 * (rotation - 2)).toFloat(), centerX, centerY)
-        } else if (Surface.ROTATION_180 == rotation) {
+        val viewAR = viewRect.width() / viewRect.height()
+        val surfaceAR = bufferRect.width() / bufferRect.height()
+        if (viewAR > surfaceAR) {
+            matrix.postScale(1f, viewRect.height() / bufferRect.height(), centerX, centerY)
+        } else {
+            matrix.postScale(viewRect.width() / bufferRect.width(), 1f, centerX, centerY)
+        }
+        if (Surface.ROTATION_180 == rotation) {
             matrix.postRotate(180f, centerX, centerY)
+        } else if (Surface.ROTATION_90 == rotation || Surface.ROTATION_270 == rotation) {
+            matrix.postRotate((90 * (rotation - 2)).toFloat(), centerX, centerY)
         }
         textureView?.setTransform(matrix)
+    }
+
+    fun configureGhostTransform(viewWidth: Int, viewHeight: Int, imageWidth: Int, imageHeight: Int) {
+        val matrix = Matrix()
+        val scale = Math.max(
+                viewHeight.toFloat() / imageHeight.toFloat(),
+                viewWidth.toFloat() / imageWidth.toFloat())
+        matrix.postScale(scale, scale, 0f, 0f)
+        matrix.postTranslate((viewWidth - imageWidth * scale) / 2f, (viewHeight - imageHeight * scale) / 2f)
+        ghost_view?.imageMatrix = matrix
     }
 
 
@@ -526,20 +533,27 @@ class MainActivity : Activity() {
 
     fun stopRecording(): Boolean {
         if (recording) {
-            mediaRecorder?.stop()
-            recording = false
+            try {
+                mediaRecorder?.stop()
 
-            videoPathsList.add(output!!)
-            if (cameraID == getBackCameraID()) {
-                videoRotationList.add(displayOrientation!!)
-            } else {
-                videoRotationList.add((displayOrientation!! + 180) % 360)
+                videoPathsList.add(output!!)
+                if (cameraID == getBackCameraID()) {
+                    videoRotationList.add(displayOrientation!!)
+                } else {
+                    videoRotationList.add((displayOrientation!! + 180) % 360)
+                }
+                recordedVideoLength = seek_view?.totalLength ?: 0.0
+                updateGhost()
+            } catch(e: RuntimeException) {
+                e.printStackTrace()
+                seek_view?.totalLength = recordedVideoLength
+                return false
+            } finally {
+                releaseMediaRecorder()
+                prepareRecording()
+                endSeekbarProgress()
+                recording = false
             }
-            releaseMediaRecorder()
-            prepareRecording()
-            endSeekbarProgress()
-            recordedVideoLength = seek_view?.totalLength ?: 0.0
-            updateGhost()
             return true
         } else {
             return false
@@ -583,9 +597,18 @@ class MainActivity : Activity() {
 
     fun concatenateVideos() {
         if (ffmpegLoaded) {
+            val time = System.currentTimeMillis()
+            progressDialogHelper.showProgressDialog(this)
             val outputPath = File(externalCacheDir, "test_${System.currentTimeMillis()}.mp4").absolutePath
             VideoUtil().concatenateMultipleVideos(this@MainActivity, videoPathsList, videoRotationList, outputPath, object : FFmpegExecuteResponseHandler {
                 override fun onFinish() {
+                    progressDialogHelper.hideProgressDialog(this@MainActivity)
+                    AlertDialog.Builder(this@MainActivity)
+                            .setTitle("結合終了")
+                            .setMessage("所要時間: ${(System.currentTimeMillis() - time).toFloat() / 1000f}秒")
+                            .setNegativeButton("OK", null)
+                            .show()
+
                 }
 
                 override fun onStart() {
@@ -647,8 +670,8 @@ class MainActivity : Activity() {
     }
 
     fun updateGhost() {
-        object : AsyncTask<String, Void, Bitmap>() {
-            override fun doInBackground(vararg path: String): Bitmap {
+        object : AsyncTask<String, Void, Bitmap?>() {
+            override fun doInBackground(vararg path: String): Bitmap? {
                 val ret = MediaMetadataRetriever()
                 val stream = FileInputStream(File(path[0]))
                 ret.setDataSource(stream.fd)
@@ -661,9 +684,86 @@ class MainActivity : Activity() {
 
             override fun onPostExecute(result: Bitmap?) {
                 super.onPostExecute(result)
-                ghost_view?.setImageBitmap(result)
+                result?.let { result ->
+                    ghost_view?.let {
+                        it.setImageBitmap(result)
+                        configureGhostTransform(it.width, it.height, result.width, result.height)
+                    }
+                }
             }
         }.execute(videoPathsList.last())
     }
 
+    internal fun reverseVideo(videoPath: String, callback: () -> Unit) {
+        val dir = File(externalCacheDir, "${System.currentTimeMillis()}_image_extracted")
+        dir.mkdirs()
+        val path = File(dir, "/normal_order_frame%03d.jpg").absolutePath
+        progressDialogHelper.showProgressDialog(this)
+        VideoUtil().extractFrames(this, videoPath, path, object : FFmpegExecuteResponseHandler {
+            override fun onSuccess(message: String) {
+                Log.i(TAG, message)
+                val frameFiles = dir.listFiles { dir, filename -> filename.startsWith("normal_order_frame") }
+                var i = 1
+                for (f in frameFiles) {
+                    f.renameTo(File(dir, String.format("/reverse_order_frame%03d.jpg", i)))
+                    ++i
+                }
+                val reversedPath = getTemporaryFile().absolutePath
+                VideoUtil().combineImagesToVideo(this@MainActivity, File(dir, "/reverse_order_frame%03d.jpg").absolutePath, reversedPath, object : FFmpegExecuteResponseHandler {
+                    override fun onSuccess(message: String) {
+                        Log.i(TAG, message)
+                    }
+
+                    override fun onProgress(message: String) {
+                        Log.i(TAG, message)
+
+                    }
+
+                    override fun onFailure(message: String) {
+                        Log.i(TAG, message)
+                    }
+
+                    override fun onStart() {
+
+                    }
+
+                    override fun onFinish() {
+                        for (f in dir.listFiles()) {
+                            if (f.exists()) {
+                                f.delete()
+                            }
+                        }
+                        dir.delete()
+                        var f = File(videoPath)
+                        if (f.exists()) {
+                            f.delete()
+                        }
+                        f = File(reversedPath)
+                        if (f.exists()) {
+                            f.renameTo(File(videoPath))
+                        }
+                        progressDialogHelper.hideProgressDialog(this@MainActivity)
+                        callback()
+                    }
+
+                })
+            }
+
+            override fun onProgress(message: String) {
+                Log.i(TAG, message)
+            }
+
+            override fun onFailure(message: String) {
+                Log.i(TAG, message)
+            }
+
+            override fun onStart() {
+
+            }
+
+            override fun onFinish() {
+
+            }
+        })
+    }
 }
