@@ -13,6 +13,7 @@ import android.hardware.Camera
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import android.media.AudioManager
 import android.media.CamcorderProfile
 import android.media.MediaMetadataRetriever
 import android.media.MediaRecorder
@@ -554,6 +555,7 @@ class MainActivity : Activity() {
 
     fun startRecording() {
         if (!recording) {
+            setMuteAll(true)
             mediaRecorder?.let {
                 seek_view?.addSection()
                 it.start()
@@ -568,7 +570,6 @@ class MainActivity : Activity() {
         if (recording) {
             try {
                 mediaRecorder?.stop()
-
                 videoPathsList.add(output!!)
                 if (cameraID == getBackCameraID()) {
                     videoRotationList.add(displayOrientation!!)
@@ -577,6 +578,7 @@ class MainActivity : Activity() {
                 }
                 recordedVideoLength = seek_view?.totalLength ?: 0.0
                 updateGhost()
+                setMuteAll(false)
             } catch(e: RuntimeException) {
                 e.printStackTrace()
                 seek_view?.totalLength = recordedVideoLength
@@ -1131,6 +1133,33 @@ class MainActivity : Activity() {
 
     fun cleanupDecoration() {
 
+    }
+
+    val streams = mutableListOf<Int>()
+    val initialVolumes = mutableListOf<Int>()
+
+    private fun setMuteAll(mute: Boolean) {
+        val manager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
+        if (streams.isEmpty()) {
+            streams.add(AudioManager.STREAM_SYSTEM)
+            streams.add(AudioManager.STREAM_MUSIC)
+        }
+        if (mute) {
+            initialVolumes.clear()
+            for (stream in streams) {
+                initialVolumes.add(manager.getStreamVolume(stream))
+                manager.setStreamVolume(stream, 0, 0)
+            }
+        } else {
+            if (initialVolumes.size == streams.size) {
+                var index = 0
+                for (stream in streams) {
+                    manager.setStreamVolume(stream, initialVolumes[index], 0)
+                    ++index
+                }
+            }
+        }
     }
 
 }
