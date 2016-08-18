@@ -2,16 +2,23 @@ package me.skonb.texturecamera
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.graphics.RectF
 import android.graphics.SurfaceTexture
 import android.hardware.Camera
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.media.CamcorderProfile
 import android.media.MediaMetadataRetriever
 import android.media.MediaRecorder
+import android.net.Uri
 import android.os.*
+import android.provider.MediaStore
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.MotionEvent
@@ -22,14 +29,27 @@ import com.github.hiteshsondhi88.libffmpeg.FFmpeg
 import com.github.hiteshsondhi88.libffmpeg.FFmpegExecuteResponseHandler
 import com.github.hiteshsondhi88.libffmpeg.LoadBinaryResponseHandler
 import com.github.hiteshsondhi88.libffmpeg.exceptions.FFmpegNotSupportedException
+import io.nlopez.smartlocation.SmartLocation
+import io.nlopez.smartlocation.location.config.LocationParams
+import io.nlopez.smartlocation.location.providers.LocationManagerProvider
+import io.nlopez.smartlocation.rx.ObservableFactory
 import kotlinx.android.synthetic.main.activity_main.*
 import java.io.File
 import java.io.FileInputStream
+import java.io.IOException
+import java.util.*
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 
 /**
  * Created by skonb on 2016/07/28.
  */
 class MainActivity : Activity() {
+    companion object {
+        internal val REQUEST_PICK_MOVIE = 101
+        internal val PERMISSION_REQUEST_LOCATION = 120
+    }
 
     enum class Speed(val value: Float) {
         _1x(1f), _2x(2f), _3x(3f), _6x(6f),
@@ -89,8 +109,13 @@ class MainActivity : Activity() {
     var displayOrientation: Int? = null
     var videoPathsList: MutableList<String> = mutableListOf()
     var videoRotationList: MutableList<Int> = mutableListOf()
+    var transcodedVideoPathsList: MutableList<String> = mutableListOf()
     var handler: Handler? = null
+    var converterHandler: Handler? = null
     var ffmpegLoaded = false
+    var lastLocation: Location = Location("")
+    var lastDate: Date? = null
+
 
     fun configureEnabledSpeeds(params: Camera.Parameters) {
         var array = IntArray(2)
@@ -159,6 +184,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        startFindingLocation()
         textureView?.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
             override fun onSurfaceTextureDestroyed(surfaceTexture: SurfaceTexture?): Boolean {
                 stopPreview()
@@ -207,6 +233,8 @@ class MainActivity : Activity() {
                         val f = File(videoPathsList.last())
                         if (f.length() == 0L) {
                             videoPathsList.removeAt(videoPathsList.size - 1)
+                        } else {
+                            convertTargetQueue.add(videoPathsList.last())
                         }
                     }
                 }
@@ -230,6 +258,10 @@ class MainActivity : Activity() {
                 selectedSpeed = enabledSpeeds[which]
 
             }).setTitle("速度を選択").setNegativeButton("キャンセル", null).show()
+        }
+
+        pick_button?.setOnClickListener {
+            pickMovie()
         }
     }
 
@@ -394,13 +426,14 @@ class MainActivity : Activity() {
             openCamera(it)
         }
         textureView?.keepScreenOn = true
+        startConverting()
     }
 
     override fun onPause() {
         releaseMediaRecorder()
         releaseCamera()
         textureView?.keepScreenOn = false
-
+        stopConverting()
         super.onPause()
     }
 
@@ -455,8 +488,8 @@ class MainActivity : Activity() {
     }
 
 
-    fun getTemporaryFile(): File {
-        return File(externalCacheDir, "test_${System.currentTimeMillis()}.mp4")
+    fun getTemporaryFile(extention: String = "mp4"): File {
+        return File(externalCacheDir, "test_${System.currentTimeMillis()}.$extention")
     }
 
     var output: String? = null
@@ -600,33 +633,51 @@ class MainActivity : Activity() {
             val time = System.currentTimeMillis()
             progressDialogHelper.showProgressDialog(this)
             val outputPath = File(externalCacheDir, "test_${System.currentTimeMillis()}.mp4").absolutePath
-            VideoUtil().concatenateMultipleVideos(this@MainActivity, videoPathsList, videoRotationList, outputPath, object : FFmpegExecuteResponseHandler {
-                override fun onFinish() {
-                    progressDialogHelper.hideProgressDialog(this@MainActivity)
-                    AlertDialog.Builder(this@MainActivity)
-                            .setTitle("結合終了")
-                            .setMessage("所要時間: ${(System.currentTimeMillis() - time).toFloat() / 1000f}秒")
-                            .setNegativeButton("OK", null)
-                            .show()
+            object : AsyncTask<Unit, Unit, Unit>() {
+                override fun doInBackground(vararg params: Unit?): Unit {
+                    while (!convertTargetQueue.isEmpty()) {
+                        Thread.sleep(33)
+                    }
+                    VideoUtil().concatenate(this@MainActivity, transcodedVideoPathsList, outputPath, object : FFmpegExecuteResponseHandler {
+                        override fun onFinish() {
+                            progressDialogHelper.hideProgressDialog(this@MainActivity)
+                            AlertDialog.Builder(this@MainActivity)
+                                    .setTitle("結合終了")
+                                    .setMessage("所要時間: ${(System.currentTimeMillis() - time).toFloat() / 1000f}秒")
+                                    .setNegativeButton("OK", null)
+                                    .show()
+                            cleanupRecording()
+                            val time2 = System.currentTimeMillis()
+                            decorate(outputPath, {
+                                AlertDialog.Builder(this@MainActivity)
+                                        .setTitle("BGM合成終了")
+                                        .setMessage("所要時間: ${(System.currentTimeMillis() - time2).toFloat() / 1000f}秒")
+                                        .setNegativeButton("OK", null)
+                                        .show()
 
+
+                            })
+                        }
+
+                        override fun onStart() {
+                        }
+
+                        override fun onSuccess(message: String?) {
+                            Log.i(TAG, message)
+                        }
+
+                        override fun onFailure(message: String?) {
+
+                            Log.i(TAG, message)
+                        }
+
+                        override fun onProgress(message: String?) {
+                            Log.i(TAG, message)
+                        }
+                    })
+                    return
                 }
-
-                override fun onStart() {
-                }
-
-                override fun onSuccess(message: String?) {
-                    Log.i(TAG, message)
-                }
-
-                override fun onFailure(message: String?) {
-
-                    Log.i(TAG, message)
-                }
-
-                override fun onProgress(message: String?) {
-                    Log.i(TAG, message)
-                }
-            })
+            }.execute()
         } else {
             AlertDialog.Builder(this).setMessage("FFMpegがロードされていません。").setPositiveButton("OK", null).show()
         }
@@ -765,5 +816,321 @@ class MainActivity : Activity() {
 
             }
         })
+
     }
+
+    internal fun pickMovie() {
+        val moviePickerIntent = Intent(Intent.ACTION_PICK, MediaStore.Video.Media.EXTERNAL_CONTENT_URI)
+        val chooserIntent = Intent.createChooser(moviePickerIntent, "動画を選択するアプリを選んで下さい")
+        startActivityForResult(chooserIntent, REQUEST_PICK_MOVIE)
+    }
+
+    val convertTargetQueue = LinkedBlockingQueue<String>()
+    fun startConverting() {
+        converterHandler = object : Handler(Looper.getMainLooper()) {
+            override fun handleMessage(msg: Message?) {
+                super.handleMessage(msg)
+                if (!FFmpeg.getInstance(this@MainActivity).isFFmpegCommandRunning && !convertTargetQueue.isEmpty()) {
+                    val target = convertTargetQueue.peek()
+                    VideoUtil().transcodeToMpegTransportStream(this@MainActivity, target, { outPath ->
+                        transcodedVideoPathsList.add(outPath!!)
+                        convertTargetQueue.remove()
+                        sendEmptyMessageDelayed(0, 33)
+                    })
+                } else {
+                    sendEmptyMessageDelayed(0, 33)
+                }
+            }
+        }
+        converterHandler?.sendEmptyMessageDelayed(0, 33)
+    }
+
+    fun stopConverting() {
+        converterHandler?.removeMessages(0)
+        converterHandler = null
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        when (requestCode) {
+            REQUEST_PICK_MOVIE -> {
+                if (resultCode == Activity.RESULT_OK) {
+                    var selectedVideo: Uri? = null
+                    selectedVideo = data!!.data
+                    val filePathColumn = arrayOf(MediaStore.Video.Media.DATA, MediaStore.Video.Media.DURATION)
+                    val cursor = contentResolver.query(
+                            selectedVideo, filePathColumn, null, null, null)
+                    cursor.moveToFirst()
+
+                    var columnIndex = cursor.getColumnIndex(filePathColumn[0])
+
+                    val filePath = cursor.getString(columnIndex)
+                    cursor.moveToFirst()
+
+                    columnIndex = cursor.getColumnIndex(filePathColumn[1])
+                    var duration = cursor.getLong(columnIndex)
+                    cursor.close()
+                    val path = getTemporaryFile().absolutePath
+                    try {
+                        FileManager.copyInputStreamToFile(this, if (filePath != null)
+                            FileInputStream(filePath)
+                        else
+                            contentResolver.openInputStream(selectedVideo), File(path))
+                        convertTo720p(path, { outPath ->
+                            outPath?.let {
+                                videoPathsList.add(outPath)
+                                videoRotationList.add(90)
+                                MovieInfoRetriever.retrieve(path)?.let { info ->
+                                    info.lat?.let {
+                                        lastLocation.latitude = info.lat
+                                        lastLocation.longitude = info.lng
+                                    }
+                                    lastDate = info.takenDate
+                                }
+                                AlertDialog.Builder(this@MainActivity).setTitle("メタデータ")
+                                seek_view?.addSection()
+                                if (duration == 0L) {
+                                    val retriever = MediaMetadataRetriever()
+                                    retriever.setDataSource(this, if (filePath != null) Uri.fromFile(File(filePath)) else selectedVideo)
+                                    val time = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                                    val timeInMillisec = java.lang.Long.parseLong(time)
+                                    duration = timeInMillisec
+                                }
+                                seek_view?.totalLength = recordedVideoLength + duration
+                                recordedVideoLength = seek_view?.totalLength ?: 0.0
+                            } ?: {
+                                AlertDialog.Builder(this@MainActivity).
+                                        setTitle("エラー").setMessage("動画の変換に失敗しました").setNegativeButton("OK", null).show()
+
+                            }()
+                        })
+                    } catch (e: IOException) {
+                        e.printStackTrace()
+                    }
+
+                }
+            }
+        }
+    }
+
+    fun convertTo720p(videoPath: String, callback: ((path: String?) -> Unit)?) {
+        MovieInfoRetriever.retrieve(videoPath)?.let { info ->
+            if (info.width == 720 && info.height == 1280) {
+                callback?.invoke(videoPath)
+            } else {
+                val f = getTemporaryFile()
+                progressDialogHelper.showProgressDialog(this)
+                VideoUtil().convertTo720p(this, videoPath, f.absolutePath, object : FFmpegExecuteResponseHandler {
+                    override fun onFinish() {
+                        progressDialogHelper.hideProgressDialog(this@MainActivity)
+                        File(videoPath).delete()
+                    }
+
+                    override fun onStart() {
+
+                    }
+
+                    override fun onSuccess(message: String?) {
+                        Log.i(TAG, message)
+                        callback?.invoke(f.absolutePath)
+                    }
+
+                    override fun onFailure(message: String?) {
+                        Log.i(TAG, message)
+                        callback?.invoke(null)
+                    }
+
+                    override fun onProgress(message: String?) {
+                        Log.i(TAG, message)
+                    }
+                })
+            }
+        }
+    }
+
+
+    fun startFindingLocation() {
+        var locationControl: SmartLocation.LocationControl? = null
+        locationControl = SmartLocation.with(this).location(LocationManagerProvider())
+        if (locationControl!!.state().isGpsAvailable) {
+            locationControl.config(if (Build.HARDWARE.startsWith("vbox86")) LocationParams.NAVIGATION else LocationParams.LAZY)
+        } else if (locationControl.state().isNetworkAvailable) {
+            locationControl.config(LocationParams.LAZY)
+        } else if (locationControl.state().isPassiveAvailable) {
+            locationControl.config(LocationParams.LAZY)
+        }
+        val locationFetched = HashMap<String, Boolean>()
+
+        if (locationControl.state().isAnyProviderAvailable && locationControl.state().locationServicesEnabled()) {
+            val locationObservable = ObservableFactory.from(locationControl)
+            val finalLocationControl = locationControl
+            locationObservable.timeout(5000, TimeUnit.MILLISECONDS).subscribe({ location ->
+                runOnUiThread {
+                    finalLocationControl.stop()
+                    locationFetched.put("fetched", true)
+                    if (location != null) {
+                        this@MainActivity.lastLocation.latitude = location.latitude
+                        this@MainActivity.lastLocation.longitude = location.longitude
+                    } else {
+                        if (SmartLocation.with(this).location().lastLocation != null) {
+                            SmartLocation.with(this).location().lastLocation?.let { location ->
+                                this@MainActivity.lastLocation.latitude = location.latitude
+                                this@MainActivity.lastLocation.longitude = location.longitude
+
+                            }
+                        } else {
+                            try {
+                                fetchLocationManually(true)
+                            } catch (e: SecurityException) {
+                                e.printStackTrace()
+                            }
+
+                        }
+                    }
+                }
+            }, { throwable ->
+                runOnUiThread {
+                    try {
+                        //In some devices GoogleApiClient#isConnected returns true,
+                        //then subsequent call of removeLocationUpdates raises 'Google ApiClient is not connected yet'.
+                        //So guard that bug here.
+                        finalLocationControl.stop()
+                    } catch (e: Exception) {
+
+                    }
+
+                    if (throwable is TimeoutException && locationFetched["fetched"] == null) {
+                        if (SmartLocation.with(this).location().lastLocation != null) {
+                            SmartLocation.with(this).location().lastLocation?.let { location ->
+                                this@MainActivity.lastLocation.latitude = location.latitude
+                                this@MainActivity.lastLocation.longitude = location.longitude
+                            }
+                        } else {
+                            try {
+                                fetchLocationManually(true)
+                            } catch (e: SecurityException) {
+                                e.printStackTrace()
+                            }
+
+                        }
+                    }
+                }
+            }) {
+
+            }
+
+        } else {
+            ErrorDialogHelper.showErrorDialogWithMessage(this, "現在地が取得できません。位置情報サービスが有効になっていないか、有効な位置情報プロバイダが存在しません。")
+        }
+    }
+
+    @Throws(SecurityException::class)
+    internal fun fetchLocationManually(repeat: Boolean) {
+        val locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        val listener = object : LocationListener {
+            override fun onLocationChanged(location: Location) {
+                try {
+                    locationManager.removeUpdates(this)
+                } catch (e: SecurityException) {
+                    e.printStackTrace()
+                }
+                this@MainActivity.lastLocation.latitude = location.latitude
+                this@MainActivity.lastLocation.longitude = location.longitude
+
+            }
+
+            override fun onStatusChanged(provider: String, status: Int, extras: Bundle) {
+                Log.i("", "status: " + status)
+            }
+
+            override fun onProviderEnabled(provider: String) {
+                Log.i("", "provider: " + provider)
+            }
+
+            override fun onProviderDisabled(provider: String) {
+                try {
+                    locationManager.removeUpdates(this)
+                } catch (e: SecurityException) {
+                    e.printStackTrace()
+                }
+
+                runOnUiThread {
+                    ErrorDialogHelper.showErrorDialogWithMessage(this@MainActivity, "位置情報の取得に失敗しました")
+                }
+            }
+        }
+        if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+            locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 0, 0f, listener)
+        } else if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+            locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 0, 0f, listener)
+        } else if (locationManager.isProviderEnabled(LocationManager.PASSIVE_PROVIDER)) {
+            locationManager.requestLocationUpdates(LocationManager.PASSIVE_PROVIDER, 0, 0f, listener)
+        }
+        val myHandler = Handler(Looper.getMainLooper())
+        myHandler.postDelayed({
+            locationManager.removeUpdates(listener)
+            if (repeat) {
+                fetchLocationManually(false)
+            } else {
+                runOnUiThread {
+                    val loc = Location("")
+//                    loc.latitude = SysConfigData.getValueByKey(Define.SYS_CONFIG_KEY_DEFAULT_LATITUDE).toDouble()
+//                    loc.longitude = SysConfigData.getValueByKey(Define.SYS_CONFIG_KEY_DEFAULT_LONGITUDE).toDouble()
+                    this.lastLocation = loc
+                }
+            }
+        }, 5000)
+    }
+
+    fun decorate(videoPath: String?, callback: ((outPath: String?) -> Unit)?) {
+        val info = MovieInfoRetriever.retrieve(videoPath)
+        val bgmPath = getTemporaryFile("mp3")
+        val bitmapPath = getTemporaryFile("png")
+        FileManager.copyInputStreamToFile(this, contentResolver.openInputStream(Uri.parse("android.resource://${packageName}/${R.raw.bgm}")!!), bgmPath)
+        FileManager.copyInputStreamToFile(this, contentResolver.openInputStream(Uri.parse("android.resource://${packageName}/${R.drawable.ic_media_play}")!!), bitmapPath)
+        val outFile = getTemporaryFile()
+        val overlays = mutableListOf<VideoUtil.BitmapOverlay>()
+        overlays.add(VideoUtil.BitmapOverlay.Builder().
+                setTiming(1f, 3f).
+                setBitmapPath(bitmapPath.absolutePath).setSize(100, 100).setRotation(Math.PI.toFloat() / 3f).setMovieDuration((info!!.duration / 1000f).toFloat())
+                .build())
+        VideoUtil().decorate(this, videoPath!!, (info!!.duration / 1000f), lastLocation, overlays, VideoUtil.Music(bgmPath.absolutePath, 10f, 10f + (info!!.duration / 1000f)),
+                VideoUtil.Filter.None, outFile.absolutePath,
+                object :
+                        FFmpegExecuteResponseHandler {
+                    override fun onFinish() {
+                        callback?.invoke(outFile.absolutePath)
+                    }
+
+                    override fun onStart() {
+                    }
+
+                    override fun onSuccess(message: String?) {
+                        Log.i(TAG, message)
+                    }
+
+                    override fun onFailure(message: String?) {
+                        Log.i(TAG, message)
+                    }
+
+                    override fun onProgress(message: String?) {
+                        Log.i(TAG, message)
+                    }
+                })
+
+    }
+
+    fun cleanupRecording() {
+        (videoPathsList + transcodedVideoPathsList).forEach { path ->
+            val f = File(path)
+            if (f.exists()) {
+                f.delete()
+            }
+        }
+    }
+
+    fun cleanupDecoration() {
+
+    }
+
 }

@@ -3,8 +3,8 @@ package me.skonb.texturecamera
 import android.app.Activity
 import android.content.ContentValues
 import android.content.Context
-import android.graphics.Bitmap
 import android.hardware.Camera
+import android.location.Location
 import android.os.Build
 import android.provider.MediaStore
 import android.util.Log
@@ -229,12 +229,21 @@ class VideoUtil {
     }
 
 
+    fun concatenate(paramContext: Context, videoPaths: List<String>, outPath: String, handler: FFmpegExecuteResponseHandler) {
+        var processor = Processor(paramContext).newCommand()
+        processor.setFormat("mpegts").addInputPath("concat:${videoPaths.joinToString("|")}").setCopy().setBsfA("aac_adtstoasc").enableOverwrite().addCommand("-metadata:s:v:0").addCommand("rotate=0").
+                addCommand("-metadata").addCommand("creation_time=\"${SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(Date())}\"").
+                addCommand("-preset").addCommand("ultrafast").processToOutput(outPath, handler)
+    }
+
     fun concatenateMultipleVideos(paramContext: Context, videoPaths: List<String>, rotations: List<Int>, outPath: String, handler: FFmpegExecuteResponseHandler) {
         var intermediates = mutableListOf<String>()
         recursivelyTranscode(paramContext, videoPaths, 0, intermediates, { success ->
             if (success) {
                 var processor = Processor(paramContext).newCommand()
-                processor.setFormat("mpegts").addInputPath("concat:${intermediates.joinToString("|")}").setCopy().setBsfA("aac_adtstoasc").enableOverwrite().addCommand("-metadata:s:v:0").addCommand("rotate=0").processToOutput(outPath,
+                processor.setFormat("mpegts").addInputPath("concat:${intermediates.joinToString("|")}").setCopy().setBsfA("aac_adtstoasc").enableOverwrite().addCommand("-metadata:s:v:0").addCommand("rotate=0").
+                        addCommand("-metadata").addCommand("creation_time=\"${SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(Date())}\"").
+                        addCommand("-preset").addCommand("ultrafast").processToOutput(outPath,
                         handler)
             } else {
                 handler.onFailure("transcode fails")
@@ -302,13 +311,17 @@ class VideoUtil {
         return Processor(context).newCommand().addCommand("-ar").addCommand("44100").addCommand("-ac").addCommand("2").setFormat("s16le").addInputPath("/dev/zero").addInputPath(input).addCommand("-strict").addCommand("-2").addCommand("-shortest").setVideoCopy().addCommand("-c:a").addCommand("aac").processToOutput(output, handler)
     }
 
+    enum class Filter {
+        None, Sepia, Grayscale, Bluish, Reddish
+    }
+
     class BitmapOverlay {
 
         class Builder {
             internal var overlay = BitmapOverlay()
 
-            fun setBitmap(bitmap: Bitmap): Builder {
-                overlay.bitmap = bitmap
+            fun setBitmapPath(path: String): Builder {
+                overlay.bitmapPath = path
                 return this
             }
 
@@ -338,36 +351,134 @@ class VideoUtil {
             fun build(): BitmapOverlay {
                 return overlay
             }
+
+            fun setMovieDuration(duration: Float): Builder {
+                overlay.movieDuration = duration
+                return this
+            }
         }
 
-        var bitmap: Bitmap? = null
+        var movieDuration = 0f
+
+        var bitmapPath: String? = null
         var width: Int = 0
         var height: Int = 0
         var x: Int = 0
         var y: Int = 0
-        var rotation: Float = 0.toFloat()
-        var fromTime: Float = 0.toFloat()
-        var toTime: Float = 0.toFloat()
+        var rotation = 0f
+        var fromTime = 0f
+        var toTime = 0f
+
+        fun fadeInBeginTime(): Float {
+            return Math.max(0f, fromTime - 1f)
+        }
+
+
+        fun fadeInDuration(): Float {
+            return Math.min(movieDuration - fromTime, 1f)
+        }
+
+        fun fadeOutBeginTime(): Float {
+            return Math.min(fromTime, movieDuration)
+        }
+
+        fun fadeOutDuration(): Float {
+            return Math.min(movieDuration - toTime, 1f)
+        }
+
+
     }
 
     class Music(var path: String, var fromTime: Float, var toTime: Float)
 
-    fun decorate(context: Context, input: String, bitmapOverlays: List<BitmapOverlay>, music: Music?, output: String, handler: FFmpegExecuteResponseHandler): Int {
+    fun decorate(context: Context, input: String, duration: Float, location: Location, bitmapOverlays: List<BitmapOverlay>, music: Music?, filter: Filter, output: String, handler:
+    FFmpegExecuteResponseHandler): Int {
         val processor = Processor(context).newCommand()
         if (music != null) {
-            processor.addCommand("-itsoffset").addCommand(music.fromTime.toString())
+            processor.setStart((music.fromTime * 1000).toLong())
             processor.addInputPath(music.path)
+            processor.setTotalDuration(((music.toTime - music.fromTime) * 1000).toLong())
+            processor.addInputPath(input)
         } else {
             processor.addInputPath(input)
+            processor.addInputPath(input)
         }
-        processor.addInputPath(input)
-        for (bitmapOverlay in bitmapOverlays) {
+        if (bitmapOverlays.size > 0) {
+            val builder = StringBuilder()
+            var index = 2
+            for (bitmapOverlay in bitmapOverlays) {
+                processor.addCommand("-loop").addCommand("1").addInputPath(bitmapOverlay.bitmapPath!!)
+                builder.append("[$index:0] format=rgba, scale=${bitmapOverlay.width}:${bitmapOverlay.height},rotate=${bitmapOverlay.rotation}:c=none:ow=rotw(iw):oh=roth(ih), " +
+                        "fade=in:st=${bitmapOverlay.fadeInBeginTime()}:d=${bitmapOverlay.fadeInDuration()}:alpha=1, " +
+                        "fade=out:st=${bitmapOverlay.fadeOutBeginTime()}:d=${bitmapOverlay.fadeOutDuration()}:alpha=1 " +
+                        "[ovr_$index];")
+                ++index
+            }
+            index = 2
+            for (bitmapOverlay in bitmapOverlays) {
+                if (index == 2) {
+                    builder.append("[1:v]")
+                } else {
+                    builder.append("dst_${index - 1}")
+                }
+                builder.append("[ovr_$index] overlay=${bitmapOverlay.x}:${bitmapOverlay.y} [dst_$index];")
+                ++index
+            }
+            processor.addCommand("-filter_complex")
+            processor.addCommand(builder.removeSuffix(";").toString())
+            processor.setMap("0:a")
+            processor.setMap("[dst_${index - 1}]")
+        } else {
+            if (filter == Filter.None) {
+                processor.setVideoCopy()
+                processor.setMap("0:a")
+                processor.setMap("1:v")
+            } else {
+                when (filter) {
+                    Filter.Sepia -> {
+                        processor.addCommand("-filter_complex").addCommand("[1:v]colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131[filtered]")
+                    }
+                    Filter.Grayscale -> {
+                        processor.addCommand("-filter_complex").addCommand("[1:v]colorchannelmixer=.3:.4:.3:0:.3:.4:.3:0:.3:.4:.3[filtered]")
+                    }
 
+                    Filter.Bluish -> {
+
+                    }
+
+                    Filter.Reddish -> {
+
+                    }
+                }
+                processor.setMap("0:a")
+                processor.setMap("[filtered]")
+            }
         }
-        processor.setMap("0:a")
-        processor.setMap("1:v")
-        processor.setVideoCopy().setAudioCopy().addCommand("-shortest")
+        processor.addCommand("-shortest")
+
+        processor.addCommand("-t").addCommand(duration.toString())
+        processor.addCommand("-preset").addCommand("ultrafast")
+        processor.addCommand("-metadata").addCommand("creation_time=\"${SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(Date())}\"")
+        processor.addCommand("-metadata").addCommand("location=${if (location.latitude > 0) {
+            '+'
+        } else {
+            '-'
+        }}${Math.abs(location.latitude)}${if (location.longitude > 0) {
+            '+'
+        } else {
+            '-'
+        }}${Math.abs(location
+                .longitude)}/")
         return processor.processToOutput(output, handler)
+
     }
 
+    fun convertTo720p(context: Context, input: String, output: String, handler: FFmpegExecuteResponseHandler) {
+        val processor = Processor(context).newCommand()
+        processor.addInputPath(input)
+                .addFilter("crop=in_h*9/16:in_h,scale=720:1280")
+                .setAudioCopy().setBsfV("h264_mp4toannexb").setFormat("mpegts")
+                .enableOverwrite()
+                .processToOutput(output, handler)
+    }
 }

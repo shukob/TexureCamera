@@ -14,18 +14,20 @@
         app:layout_constraintBottom_toBottomOf="@+id/activity_main"
         app:layout_constraintLeft_toLeftOf="@+id/activity_main"
         app:layout_constraintTop_toTopOf="@+id/activity_main"
-        app:layout_constraintVertical_bias="1.0"
+        app:layout_constraintVertical_bias="0.0"
         tools:layout_constraintBottom_creator="1"
         tools:layout_constraintLeft_creator="1"
         tools:layout_constraintTop_creator="1" />
 
     <ImageView
         android:id="@+id/ghost_view"
-        android:alpha="0.2"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
+        android:alpha="0.2"
         android:background="@android:color/transparent"
-        android:scaleType="matrix" />
+        android:scaleType="matrix"
+        tools:layout_editor_absoluteX="0dp"
+        tools:layout_editor_absoluteY="0dp" />
 
     <Button
         android:id="@+id/button"
@@ -75,4 +77,15 @@
         android:text="結合"
         app:layout_constraintBottom_toBottomOf="@+id/activity_main"
         app:layout_constraintRight_toRightOf="@+id/textureView" />
+
+    <Button
+        android:id="@+id/pick_button"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="16dp"
+        android:layout_marginRight="16dp"
+        android:layout_marginLeft="16dp"
+        android:text="インポート"
+        app:layout_constraintBottom_toBottomOf="@+id/activity_main"
+        app:layout_constraintLeft_toLeftOf="@+id/textureView" />
 </android.support.constraint.ConstraintLayout>
