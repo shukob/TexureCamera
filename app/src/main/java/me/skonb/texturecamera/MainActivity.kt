@@ -637,8 +637,8 @@ class MainActivity : Activity() {
             val outputPath = File(externalCacheDir, "test_${System.currentTimeMillis()}.mp4").absolutePath
             object : AsyncTask<Unit, Unit, Unit>() {
                 override fun doInBackground(vararg params: Unit?): Unit {
-                    while (!convertTargetQueue.isEmpty()) {
-                        Thread.sleep(33)
+                    while (!convertTargetQueue.isEmpty() || FFmpeg.getInstance(this@MainActivity).isFFmpegCommandRunning) {
+                        Thread.sleep(100)
                     }
                     VideoUtil().concatenate(this@MainActivity, transcodedVideoPathsList, outputPath, object : FFmpegExecuteResponseHandler {
                         override fun onFinish() {
