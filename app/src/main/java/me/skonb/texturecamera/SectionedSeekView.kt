@@ -29,6 +29,15 @@ class SectionedSeekView : View {
     var delegate: Delegate? = null
     var paint = Paint()
 
+    val colors: IntArray = intArrayOf(
+            Color.parseColor("#7fbfff"),
+            Color.parseColor("#ff7fbf"),
+            Color.parseColor("#bfff7f"),
+            Color.parseColor("#ffff7f"),
+            Color.parseColor("#bf7fff"),
+            Color.parseColor("#fba848"))
+
+
     var totalLength: Double
         get() {
             return sections.fold(0.0) { x, y -> x + y }
@@ -78,7 +87,7 @@ class SectionedSeekView : View {
         for (section in sections) {
             val width = (width * (section / maximumLength)).toFloat()
             paint.style = Paint.Style.FILL
-            paint.color = Color.parseColor("#CCFF7F00")//colors[index % colors.count()]
+            paint.color = colors[index % colors.count()]
             canvas?.drawRect(offset, 0F, offset + width, height.toFloat(), paint)
             offset += width
             ++index

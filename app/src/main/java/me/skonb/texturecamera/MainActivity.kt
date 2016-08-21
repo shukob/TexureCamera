@@ -5,9 +5,7 @@ import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
 import android.graphics.Matrix
-import android.graphics.RectF
 import android.graphics.SurfaceTexture
 import android.hardware.Camera
 import android.location.Location
@@ -459,33 +457,54 @@ class MainActivity : Activity() {
     private fun configurePreviewTransform(viewWidth: Int, viewHeight: Int) {
         val rotation = windowManager.defaultDisplay.rotation
         val matrix = Matrix()
-        val viewRect = RectF(0f, 0f, viewWidth.toFloat(), viewHeight.toFloat())
-        var bufferRect = RectF(0f, 0f, previewHeight.toFloat(), previewWidth.toFloat())
-        val centerX = viewRect.centerX()
-        val centerY = viewRect.centerY()
-        val viewAR = viewRect.width() / viewRect.height()
-        val surfaceAR = bufferRect.width() / bufferRect.height()
-        if (viewAR > surfaceAR) {
-            matrix.postScale(1f, viewRect.height() / bufferRect.height(), centerX, centerY)
+        val height = previewWidth
+        val width = previewHeight
+        val horizontalScale = viewWidth.toFloat() / width
+        val verticalScale = viewHeight.toFloat() / height
+        if (horizontalScale > verticalScale) {
+            matrix.postScale(1f, horizontalScale / verticalScale, 0f, 0f)
+            val scaledHeight = height * horizontalScale / verticalScale
+//            matrix.postTranslate(0f, -(scaledHeight - viewHeight) / 2f)
         } else {
-            matrix.postScale(viewRect.width() / bufferRect.width(), 1f, centerX, centerY)
+            matrix.postScale(verticalScale / horizontalScale, 1f, 0f, 0f)
+            val scaledWidth = width * verticalScale / horizontalScale
+//            matrix.postTranslate(-(scaledWidth - viewWidth) / 2f, 0f)
         }
+//
         if (Surface.ROTATION_180 == rotation) {
-            matrix.postRotate(180f, centerX, centerY)
+            matrix.postRotate(180f, viewWidth / 2f, viewHeight / 2f)
         } else if (Surface.ROTATION_90 == rotation || Surface.ROTATION_270 == rotation) {
-            matrix.postRotate((90 * (rotation - 2)).toFloat(), centerX, centerY)
+            matrix.postRotate((90 * (rotation - 2)).toFloat(), viewWidth / 2f, viewHeight / 2f)
         }
         textureView?.setTransform(matrix)
     }
 
     fun configureGhostTransform(viewWidth: Int, viewHeight: Int, imageWidth: Int, imageHeight: Int) {
-        val matrix = Matrix()
-        val scale = Math.max(
-                viewHeight.toFloat() / imageHeight.toFloat(),
-                viewWidth.toFloat() / imageWidth.toFloat())
-        matrix.postScale(scale, scale, 0f, 0f)
-        matrix.postTranslate((viewWidth - imageWidth * scale) / 2f, (viewHeight - imageHeight * scale) / 2f)
-        ghost_view?.imageMatrix = matrix
+//        val height = previewWidth
+//        val width = previewHeight
+//        val horizontalScale = viewWidth.toFloat() / width
+//        val verticalScale = viewHeight.toFloat() / height
+//        val previewScale = Math.max(horizontalScale, verticalScale)
+//        val previewAR = width.toFloat() / height.toFloat()
+//        val imageAR = imageWidth.toFloat() / imageHeight.toFloat()
+//        val matrix = Matrix()
+//        if (cameraID == getFrontCameraID()) {
+//            matrix.postScale(-1f, 1f)
+//            matrix.postTranslate(imageWidth.toFloat(), 0f)
+//        }
+//        if (previewAR < imageAR) {
+//            val scale = width.toFloat() / imageWidth.toFloat()
+//            val translate = (imageHeight.toFloat() * scale - height) / 2f
+//            matrix.postScale(scale, scale)
+//            matrix.postTranslate(0f, translate)
+//        } else {
+//            val scale = height.toFloat() / imageHeight.toFloat()
+//            val translate = (imageWidth.toFloat() * scale - width) / 2f
+//            matrix.postScale(scale, scale)
+//            matrix.postTranslate(translate, 0f)
+//        }
+//        matrix.postScale(previewScale, previewScale)
+//        ghost_view?.imageMatrix = matrix
     }
 
 
@@ -723,28 +742,7 @@ class MainActivity : Activity() {
     }
 
     fun updateGhost() {
-        object : AsyncTask<String, Void, Bitmap?>() {
-            override fun doInBackground(vararg path: String): Bitmap? {
-                val ret = MediaMetadataRetriever()
-                val stream = FileInputStream(File(path[0]))
-                ret.setDataSource(stream.fd)
-                val duration = ret.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION).toLong()
-                val res = ret.getFrameAtTime(duration * 1000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                ret.release()
-                stream.close()
-                return res
-            }
-
-            override fun onPostExecute(result: Bitmap?) {
-                super.onPostExecute(result)
-                result?.let { result ->
-                    ghost_view?.let {
-                        it.setImageBitmap(result)
-                        configureGhostTransform(it.width, it.height, result.width, result.height)
-                    }
-                }
-            }
-        }.execute(videoPathsList.last())
+        ghost_view?.setImageBitmap(textureView.bitmap)
     }
 
     internal fun reverseVideo(videoPath: String, callback: () -> Unit) {
