@@ -30,12 +30,12 @@ class SectionedSeekView : View {
     var paint = Paint()
 
     val colors: IntArray = intArrayOf(
-            Color.parseColor("#7fbfff"),
-            Color.parseColor("#ff7fbf"),
-            Color.parseColor("#bfff7f"),
-            Color.parseColor("#ffff7f"),
-            Color.parseColor("#bf7fff"),
-            Color.parseColor("#fba848"))
+            Color.parseColor("#cc7fbfff"),
+            Color.parseColor("#ccff7fbf"),
+            Color.parseColor("#ccbfff7f"),
+            Color.parseColor("#ccffff7f"),
+            Color.parseColor("#ccbf7fff"),
+            Color.parseColor("#ccfba848"))
 
 
     var totalLength: Double

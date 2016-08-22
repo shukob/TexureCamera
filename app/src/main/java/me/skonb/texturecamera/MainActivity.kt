@@ -235,6 +235,8 @@ class MainActivity : Activity() {
                         } else {
                             convertTargetQueue.add(videoPathsList.last())
                         }
+                    } else {
+                        seek_view?.trimSection()
                     }
                 }
             }
@@ -463,12 +465,12 @@ class MainActivity : Activity() {
         val verticalScale = viewHeight.toFloat() / height
         if (horizontalScale > verticalScale) {
             matrix.postScale(1f, horizontalScale / verticalScale, 0f, 0f)
-            val scaledHeight = height * horizontalScale / verticalScale
-//            matrix.postTranslate(0f, -(scaledHeight - viewHeight) / 2f)
+            val scaledHeight = viewHeight * horizontalScale / verticalScale
+            matrix.postTranslate(0f, -(scaledHeight - viewHeight) / 2f)
         } else {
             matrix.postScale(verticalScale / horizontalScale, 1f, 0f, 0f)
-            val scaledWidth = width * verticalScale / horizontalScale
-//            matrix.postTranslate(-(scaledWidth - viewWidth) / 2f, 0f)
+            val scaledWidth = viewWidth * verticalScale / horizontalScale
+            matrix.postTranslate(-(scaledWidth - viewWidth) / 2f, 0f)
         }
 //
         if (Surface.ROTATION_180 == rotation) {
@@ -478,35 +480,6 @@ class MainActivity : Activity() {
         }
         textureView?.setTransform(matrix)
     }
-
-    fun configureGhostTransform(viewWidth: Int, viewHeight: Int, imageWidth: Int, imageHeight: Int) {
-//        val height = previewWidth
-//        val width = previewHeight
-//        val horizontalScale = viewWidth.toFloat() / width
-//        val verticalScale = viewHeight.toFloat() / height
-//        val previewScale = Math.max(horizontalScale, verticalScale)
-//        val previewAR = width.toFloat() / height.toFloat()
-//        val imageAR = imageWidth.toFloat() / imageHeight.toFloat()
-//        val matrix = Matrix()
-//        if (cameraID == getFrontCameraID()) {
-//            matrix.postScale(-1f, 1f)
-//            matrix.postTranslate(imageWidth.toFloat(), 0f)
-//        }
-//        if (previewAR < imageAR) {
-//            val scale = width.toFloat() / imageWidth.toFloat()
-//            val translate = (imageHeight.toFloat() * scale - height) / 2f
-//            matrix.postScale(scale, scale)
-//            matrix.postTranslate(0f, translate)
-//        } else {
-//            val scale = height.toFloat() / imageHeight.toFloat()
-//            val translate = (imageWidth.toFloat() * scale - width) / 2f
-//            matrix.postScale(scale, scale)
-//            matrix.postTranslate(translate, 0f)
-//        }
-//        matrix.postScale(previewScale, previewScale)
-//        ghost_view?.imageMatrix = matrix
-    }
-
 
     fun getTemporaryFile(extention: String = "mp4"): File {
         return File(externalCacheDir, "test_${System.currentTimeMillis()}.$extention")
@@ -742,8 +715,18 @@ class MainActivity : Activity() {
     }
 
     fun updateGhost() {
-        ghost_view?.setImageBitmap(textureView.bitmap)
+        val bmp = textureView.bitmap
+        Log.i(TAG, "texture bitmap size: ${bmp.width}:${bmp.height}")
+        ghost_view?.setImageBitmap(bmp)
+        configureGhostMatrix()
     }
+
+    fun configureGhostMatrix() {
+        val m = Matrix()
+        textureView?.getTransform(m)
+        ghost_view?.imageMatrix = m
+    }
+
 
     internal fun reverseVideo(videoPath: String, callback: () -> Unit) {
         val dir = File(externalCacheDir, "${System.currentTimeMillis()}_image_extracted")
